@@ -3,9 +3,9 @@ package nyggs.accounts.reconciliation.service;
 import nyggs.accounts.reconciliation.dto.CustomResponse;
 import nyggs.accounts.reconciliation.dto.ReconcileRequestDto;
 
-public interface TestService {
+public interface ReconciliationService {
 
-	public CustomResponse reconcileStatement(ReconcileRequestDto requestDto);
-	
-	public CustomResponse reconcileNow();
+	CustomResponse importBankStatement(ReconcileRequestDto requestDto);
+
+	CustomResponse reconcile();
 }

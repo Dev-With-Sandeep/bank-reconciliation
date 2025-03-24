@@ -2,9 +2,25 @@ package nyggs.accounts.reconciliation.dto;
 
 import java.util.Date;
 
+import org.springframework.beans.factory.config.ConfigurableBeanFactory;
+import org.springframework.context.annotation.Scope;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonInclude.Include;
+
+@JsonInclude(Include.NON_NULL)
+@Scope(value = ConfigurableBeanFactory.SCOPE_PROTOTYPE)
 public class BankStatementDto {
 
+	private Long id;
+
 	private Long sNo;
+
+	private Integer accountId;
+
+	private String accountNumber;
+
+	private String accountName;
 
 	private String transactionId;
 
@@ -24,12 +40,30 @@ public class BankStatementDto {
 
 	private Double balance;
 
+	private String status;
+
 	public Long getsNo() {
 		return sNo;
 	}
 
 	public void setsNo(Long sNo) {
 		this.sNo = sNo;
+	}
+
+	public Integer getAccountId() {
+		return accountId;
+	}
+
+	public void setAccountId(Integer accountId) {
+		this.accountId = accountId;
+	}
+
+	public String getAccountNumber() {
+		return accountNumber;
+	}
+
+	public void setAccountNumber(String accountNumber) {
+		this.accountNumber = accountNumber;
 	}
 
 	public String getTransactionId() {
@@ -104,11 +138,37 @@ public class BankStatementDto {
 		this.balance = balance;
 	}
 
-	public BankStatementDto(Long sNo, String transactionId, Date valueDate, Date transactionDate,
-			Date transactionPostedDate, String referenceNo, String transactionRemarks, Double debitAmount,
-			Double creditAmount, Double balance) {
+	public String getAccountName() {
+		return accountName;
+	}
+
+	public void setAccountName(String accountName) {
+		this.accountName = accountName;
+	}
+
+	public Long getId() {
+		return id;
+	}
+
+	public void setId(Long id) {
+		this.id = id;
+	}
+
+	public String getStatus() {
+		return status;
+	}
+
+	public void setStatus(String status) {
+		this.status = status;
+	}
+
+	public BankStatementDto(Long sNo, Integer accountId, String accountNumber, String transactionId, Date valueDate,
+			Date transactionDate, Date transactionPostedDate, String referenceNo, String transactionRemarks,
+			Double debitAmount, Double creditAmount, Double balance) {
 		super();
 		this.sNo = sNo;
+		this.accountId = accountId;
+		this.accountNumber = accountNumber;
 		this.transactionId = transactionId;
 		this.valueDate = valueDate;
 		this.transactionDate = transactionDate;

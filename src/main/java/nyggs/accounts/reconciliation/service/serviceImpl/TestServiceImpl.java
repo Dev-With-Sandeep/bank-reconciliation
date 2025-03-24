@@ -5,10 +5,14 @@ import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.Row;
@@ -20,13 +24,25 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import nyggs.accounts.reconciliation.dto.AccountTransactionFetchResponse;
 import nyggs.accounts.reconciliation.dto.BankStatementDto;
 import nyggs.accounts.reconciliation.dto.CustomResponse;
 import nyggs.accounts.reconciliation.dto.ReconcileRequestDto;
+import nyggs.accounts.reconciliation.dto.TransactionRequestDto;
 import nyggs.accounts.reconciliation.entity.AccountTransactions;
 import nyggs.accounts.reconciliation.entity.Accounts;
+import nyggs.accounts.reconciliation.entity.BankStatement;
+import nyggs.accounts.reconciliation.entity.ReconciliationResult;
+import nyggs.accounts.reconciliation.enums.ReconciliationStatus;
+import nyggs.accounts.reconciliation.enums.TransactionType;
+import nyggs.accounts.reconciliation.feignClient.AccountsClient;
 import nyggs.accounts.reconciliation.repository.AccountTransactionsRepository;
 import nyggs.accounts.reconciliation.repository.AccountsRepository;
+import nyggs.accounts.reconciliation.repository.BankStatementRepository;
+import nyggs.accounts.reconciliation.repository.ReconciliationResultRepository;
 import nyggs.accounts.reconciliation.service.TestService;
 
 @Service
@@ -37,6 +53,15 @@ public class TestServiceImpl implements TestService {
 
 	@Autowired
 	private AccountsRepository accountsRepository;
+
+	@Autowired
+	private BankStatementRepository bankStatementRepository;
+
+	@Autowired
+	private ReconciliationResultRepository reconciliationResultRepository;
+
+	@Autowired
+	private AccountsClient accountsClient;
 
 //	@Override
 //	public CustomResponse reconcileStatement(ReconcileRequestDto requestDto) {
@@ -58,32 +83,67 @@ public class TestServiceImpl implements TestService {
 //		}
 //	}
 
+//	@Override
+//	public CustomResponse reconcileStatement(ReconcileRequestDto requestDto) {
+//		try {
+//			MultipartFile file = requestDto.getFile();
+//			List<BankStatementDto> bankStatementDtoList = parseExcelFile(file);
+//			List<BankStatementDto> reconciledData = new ArrayList<>();
+//			Optional<Accounts> accountsOptional = accountsRepository.findById(requestDto.getAccountId());
+//			List<AccountTransactions> accountTransactionList = new ArrayList<>();
+//			if (accountsOptional.isPresent()) {
+//				accountTransactionList = accountTransactionsRepository
+//						.findAllByAccountId(accountsOptional.get().getId());
+//
+////				// Transactions Not Found.
+//				for (BankStatementDto bankStatementDto : bankStatementDtoList) {
+//					Optional<AccountTransactions> accountTransaction = accountTransactionList.stream()
+//							.filter(txn -> txn.getAmount().equals(bankStatementDto.getCreditAmount())
+//									|| txn.getAmount().equals(bankStatementDto.getDebitAmount()))
+//							.findFirst();
+//					if (!accountTransaction.isPresent()) {
+//						reconciledData.add(bankStatementDto);
+//					}
+//				}
+//
+//			} else {
+//				return new CustomResponse(HttpStatus.BAD_REQUEST.value(), null, "Account not found");
+//			}
+//			return new CustomResponse(HttpStatus.OK.value(), reconciledData, "File imported successfully");
+//		} catch (Exception e) {
+//			e.printStackTrace();
+//			return new CustomResponse(HttpStatus.BAD_REQUEST.value(), null, "Something went wrong");
+//		}
+//	}
+
 	@Override
 	public CustomResponse reconcileStatement(ReconcileRequestDto requestDto) {
 		try {
 			MultipartFile file = requestDto.getFile();
-			List<BankStatementDto> bankStatementDtoList = parseExcelFile(file);
+			List<BankStatementDto> bankStatementDtoList = parseExcelFile(file, requestDto);
 			List<BankStatementDto> reconciledData = new ArrayList<>();
-			Optional<Accounts> accountsOptional = accountsRepository.findById(requestDto.getAccountId());
-			List<AccountTransactions> accountTransactionList = new ArrayList<>();
-			if (accountsOptional.isPresent()) {
-				accountTransactionList = accountTransactionsRepository
-						.findAllByAccountId(accountsOptional.get().getId());
-
-				// Transactions Not Found.
-				for (BankStatementDto bankStatementDto : bankStatementDtoList) {
-					Optional<AccountTransactions> accountTransaction = accountTransactionList.stream()
-							.filter(txn -> txn.getAmount().equals(bankStatementDto.getCreditAmount())
-									|| txn.getAmount().equals(bankStatementDto.getDebitAmount()))
-							.findFirst();
-					if (!accountTransaction.isPresent()) {
-						reconciledData.add(bankStatementDto);
-					}
+			List<BankStatement> bankStatementList = new ArrayList<>();
+			for (BankStatementDto bankStatementDto : bankStatementDtoList) {
+				BankStatement bankStatement = new BankStatement();
+				bankStatement.setAccountId(bankStatementDto.getAccountId());
+				bankStatement.setTransactionDate(bankStatementDto.getTransactionDate());
+				if (bankStatementDto.getCreditAmount() != 0d) {
+					bankStatement.setAmount(bankStatementDto.getCreditAmount());
+					bankStatement.setTransactionType(TransactionType.CREDIT);
+				} else {
+					bankStatement.setAmount(bankStatementDto.getDebitAmount());
+					bankStatement.setTransactionType(TransactionType.DEBIT);
 				}
-
-			} else {
-				return new CustomResponse(HttpStatus.BAD_REQUEST.value(), null, "Account not found");
+				bankStatement.setReferenceNo(bankStatementDto.getReferenceNo());
+				bankStatement.setRemarks(bankStatementDto.getTransactionRemarks());
+				bankStatement.setAccountNumber(bankStatementDto.getAccountNumber());
+				bankStatement.setIsReconciled(Boolean.FALSE);
+				bankStatement.setCreatedAt(new Date());
+				bankStatement.setUpdatedAt(new Date());
+				bankStatement.setIsActive(Boolean.TRUE);
+				bankStatementList.add(bankStatement);
 			}
+			bankStatementRepository.saveAll(bankStatementList);
 			return new CustomResponse(HttpStatus.OK.value(), reconciledData, "File imported successfully");
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -91,13 +151,20 @@ public class TestServiceImpl implements TestService {
 		}
 	}
 
-	private List<BankStatementDto> parseExcelFile(MultipartFile file) throws Exception {
+	private List<BankStatementDto> parseExcelFile(MultipartFile file, ReconcileRequestDto requestDto) throws Exception {
 		List<BankStatementDto> statementList = new ArrayList<>();
 		InputStream inputStream = file.getInputStream();
 		Workbook workbook = new XSSFWorkbook(inputStream);
 		Sheet sheet = workbook.getSheetAt(0);
 		Iterator<Row> rowIterator = sheet.iterator();
 		int rowIndex = 0;
+
+		String accountNumber = null;
+		Row accountRow = sheet.getRow(4);
+		if (accountRow != null) {
+			accountNumber = getStringValue(accountRow, 1);
+			System.out.println("Extracted Account Number: " + accountNumber);
+		}
 
 		while (rowIterator.hasNext()) {
 			Row row = rowIterator.next();
@@ -115,6 +182,8 @@ public class TestServiceImpl implements TestService {
 
 			BankStatementDto statement = new BankStatementDto();
 			statement.setsNo(parseLong(getStringValue(row, 0)));
+			statement.setAccountId(requestDto.getAccountId());
+			statement.setAccountNumber(accountNumber);
 			statement.setTransactionId(getStringValue(row, 1));
 			statement.setValueDate(parseValueOrTransactionDate(row, 2)); // Parses "02/Apr/2024"
 			statement.setTransactionDate(parseValueOrTransactionDate(row, 3)); // Parses "02/Apr/2024"
@@ -218,6 +287,223 @@ public class TestServiceImpl implements TestService {
 			return true;
 		} catch (NumberFormatException e) {
 			return false;
+		}
+	}
+
+//	@Override
+//	public CustomResponse reconcileNow() {
+//		try {
+//			List<BankStatement> bankStatementList = bankStatementRepository.findAllPendingData();
+//			Map<Integer, List<BankStatement>> bankTransactions = bankStatementList.stream()
+//					.collect(Collectors.groupingBy(BankStatement::getAccountId));
+//			Optional<Date> minTransactionDate = bankStatementList.stream().map(BankStatement::getTransactionDate)
+//					.min(Date::compareTo);
+//
+//			Optional<Date> maxTransactionDate = bankStatementList.stream().map(BankStatement::getTransactionDate)
+//					.max(Date::compareTo);
+//
+//			TransactionRequestDto requestDto = new TransactionRequestDto();
+//			requestDto.setAccountIds(new ArrayList<>(bankTransactions.keySet()));
+//			requestDto.setFromDate(minTransactionDate.isPresent() ? minTransactionDate.get() : null);
+//			requestDto.setToDate(maxTransactionDate.isPresent() ? maxTransactionDate.get() : null);
+//
+//			CustomResponse response = accountsClient.findTransactionsForReconciliation(requestDto, "d3v3lop3r");
+//
+//			ObjectMapper objectMapper = new ObjectMapper();
+//			List<AccountTransactionFetchResponse> accountTransactionInfoList = objectMapper
+//					.convertValue(response.getData(), new TypeReference<List<AccountTransactionFetchResponse>>() {
+//					});
+//
+//			return new CustomResponse(HttpStatus.OK.value(), accountTransactionInfoList, "Success");
+//		} catch (Exception e) {
+//			e.printStackTrace();
+//			return new CustomResponse(HttpStatus.BAD_REQUEST.value(), null, "Something went wrong");
+//		}
+//	}
+
+//	@Override
+//	public CustomResponse reconcileNow() {
+//		try {
+//			List<BankStatement> notFoundTxn = new ArrayList<>();
+//			List<ReconciliationResult> reconciliationResultList = new ArrayList<>();
+//			List<BankStatement> bankStatementList = bankStatementRepository.findAllPendingData();
+//			Map<Integer, List<BankStatement>> debitTransactions = bankStatementList.stream()
+//					.filter(txn -> txn.getTransactionType().getId().equals(TransactionType.DEBIT.getId()))
+//					.collect(Collectors.groupingBy(BankStatement::getAccountId));
+//			Map<Integer, List<BankStatement>> creditTransactions = bankStatementList.stream()
+//					.filter(txn -> txn.getTransactionType().getId().equals(TransactionType.CREDIT.getId()))
+//					.collect(Collectors.groupingBy(BankStatement::getAccountId));
+//
+//			Map<Integer, List<BankStatement>> bankTransactions = bankStatementList.stream()
+//					.collect(Collectors.groupingBy(BankStatement::getAccountId));
+//
+//			Optional<Date> minTransactionDate = bankStatementList.stream().map(BankStatement::getTransactionDate)
+//					.min(Date::compareTo);
+//
+//			Optional<Date> maxTransactionDate = bankStatementList.stream().map(BankStatement::getTransactionDate)
+//					.max(Date::compareTo);
+//
+//			TransactionRequestDto requestDto = new TransactionRequestDto();
+//			requestDto.setAccountIds(new ArrayList<>(bankTransactions.keySet()));
+//			requestDto.setFromDate(minTransactionDate.isPresent() ? minTransactionDate.get() : null);
+//			requestDto.setToDate(maxTransactionDate.isPresent() ? maxTransactionDate.get() : null);
+//
+//			CustomResponse response = accountsClient.findTransactionsForReconciliation(requestDto, "d3v3lop3r");
+//
+//			ObjectMapper objectMapper = new ObjectMapper();
+//			List<AccountTransactionFetchResponse> accountTransactionInfoList = objectMapper
+//					.convertValue(response.getData(), new TypeReference<List<AccountTransactionFetchResponse>>() {
+//					});
+//			Map<Integer, List<AccountTransactionFetchResponse>> daybookDebitTransactionsList = accountTransactionInfoList
+//					.stream().collect(Collectors.groupingBy(AccountTransactionFetchResponse::getSourceAccountId));
+//
+//			Map<Integer, List<AccountTransactionFetchResponse>> daybookCreditTransactionsList = accountTransactionInfoList
+//					.stream().collect(Collectors.groupingBy(AccountTransactionFetchResponse::getTargetAccountId));
+//
+//			for (Map.Entry<Integer, List<BankStatement>> entry : debitTransactions.entrySet()) {
+//				List<BankStatement> debitTxns = entry.getValue();
+//				for (BankStatement bankStatement : debitTxns) {
+//					Optional<AccountTransactionFetchResponse> daybookTransaction = accountTransactionInfoList.stream()
+//							.filter(txn -> txn.getSourceAccountId().equals(bankStatement.getAccountId())
+//									&& txn.getAmount().equals(bankStatement.getAmount()))
+//							.findFirst();
+//					if (!daybookTransaction.isPresent()) {
+//						notFoundTxn.add(bankStatement);
+//					}
+//				}
+//			}
+//
+//			for (Map.Entry<Integer, List<BankStatement>> entry : creditTransactions.entrySet()) {
+//				List<BankStatement> creditTxns = entry.getValue();
+//				for (BankStatement bankStatement : creditTxns) {
+//					Optional<AccountTransactionFetchResponse> daybookTransaction = accountTransactionInfoList.stream()
+//							.filter(txn -> txn.getTargetAccountId().equals(bankStatement.getAccountId())
+//									&& txn.getAmount().equals(bankStatement.getAmount()))
+//							.findFirst();
+//					if (!daybookTransaction.isPresent()) {
+//						notFoundTxn.add(bankStatement);
+//					}
+//				}
+//			}
+//
+//			return new CustomResponse(HttpStatus.OK.value(), notFoundTxn, "Success");
+//		} catch (Exception e) {
+//			e.printStackTrace();
+//			return new CustomResponse(HttpStatus.BAD_REQUEST.value(), null, "Something went wrong");
+//		}
+//	}
+
+	@Override
+	public CustomResponse reconcileNow() {
+		try {
+			List<BankStatement> notFoundTxn = new ArrayList<>();
+			List<ReconciliationResult> reconciliationResultList = new ArrayList<>();
+			List<BankStatement> bankStatementList = bankStatementRepository.findAllPendingData();
+			Map<Integer, List<BankStatement>> debitTransactions = bankStatementList.stream()
+					.filter(txn -> txn.getTransactionType().getId().equals(TransactionType.DEBIT.getId()))
+					.collect(Collectors.groupingBy(BankStatement::getAccountId));
+			Map<Integer, List<BankStatement>> creditTransactions = bankStatementList.stream()
+					.filter(txn -> txn.getTransactionType().getId().equals(TransactionType.CREDIT.getId()))
+					.collect(Collectors.groupingBy(BankStatement::getAccountId));
+
+			Map<Integer, List<BankStatement>> bankTransactions = bankStatementList.stream()
+					.collect(Collectors.groupingBy(BankStatement::getAccountId));
+
+			Optional<Date> minTransactionDate = bankStatementList.stream().map(BankStatement::getTransactionDate)
+					.min(Date::compareTo);
+
+			Optional<Date> maxTransactionDate = bankStatementList.stream().map(BankStatement::getTransactionDate)
+					.max(Date::compareTo);
+
+			TransactionRequestDto requestDto = new TransactionRequestDto();
+			requestDto.setAccountIds(new ArrayList<>(bankTransactions.keySet()));
+			requestDto.setFromDate(minTransactionDate.isPresent() ? minTransactionDate.get() : null);
+			requestDto.setToDate(maxTransactionDate.isPresent() ? maxTransactionDate.get() : null);
+
+			CustomResponse response = accountsClient.findTransactionsForReconciliation(requestDto, "d3v3lop3r");
+
+			ObjectMapper objectMapper = new ObjectMapper();
+			List<AccountTransactionFetchResponse> accountTransactionInfoList = objectMapper
+					.convertValue(response.getData(), new TypeReference<List<AccountTransactionFetchResponse>>() {
+					});
+			Map<Integer, List<AccountTransactionFetchResponse>> daybookDebitTransactionsList = accountTransactionInfoList
+					.stream().collect(Collectors.groupingBy(AccountTransactionFetchResponse::getSourceAccountId));
+
+			Map<Integer, List<AccountTransactionFetchResponse>> daybookCreditTransactionsList = accountTransactionInfoList
+					.stream().collect(Collectors.groupingBy(AccountTransactionFetchResponse::getTargetAccountId));
+
+			for (Map.Entry<Integer, List<BankStatement>> entry : debitTransactions.entrySet()) {
+				List<BankStatement> debitTxns = entry.getValue();
+				for (BankStatement bankStatement : debitTxns) {
+					Optional<AccountTransactionFetchResponse> daybookTransaction = accountTransactionInfoList.stream()
+							.filter(txn -> txn.getSourceAccountId().equals(bankStatement.getAccountId())
+									&& txn.getAmount().equals(bankStatement.getAmount()))
+							.findFirst();
+					if (!daybookTransaction.isPresent()) {
+						ReconciliationResult result = new ReconciliationResult();
+						result.setBankTxnId(bankStatement.getId().toString());
+						result.setDaybookTxnId(null);
+						result.setDifferenceAmount(0.0);
+						result.setDescription("Transaction Not Found");
+						result.setStatus(ReconciliationStatus.MISSING_IN_BOOK);
+						result.setCreatedAt(new Date());
+						result.setUpdatedAt(new Date());
+						result.setIsActive(Boolean.TRUE);
+						reconciliationResultList.add(result);
+					} else {
+						ReconciliationResult result = new ReconciliationResult();
+						result.setBankTxnId(bankStatement.getId().toString());
+						result.setDaybookTxnId(daybookTransaction.get().getTxnId().toString());
+						result.setDifferenceAmount(0.0);
+						result.setDescription("Transaction Found");
+						result.setStatus(ReconciliationStatus.MATCHED);
+						result.setCreatedAt(new Date());
+						result.setUpdatedAt(new Date());
+						result.setIsActive(Boolean.TRUE);
+						reconciliationResultList.add(result);
+					}
+				}
+			}
+
+			for (Map.Entry<Integer, List<BankStatement>> entry : creditTransactions.entrySet()) {
+				List<BankStatement> creditTxns = entry.getValue();
+				for (BankStatement bankStatement : creditTxns) {
+					Optional<AccountTransactionFetchResponse> daybookTransaction = accountTransactionInfoList.stream()
+							.filter(txn -> txn.getTargetAccountId().equals(bankStatement.getAccountId())
+									&& txn.getAmount().equals(bankStatement.getAmount()))
+							.findFirst();
+					if (!daybookTransaction.isPresent()) {
+						ReconciliationResult result = new ReconciliationResult();
+						result.setBankTxnId(bankStatement.getId().toString());
+						result.setDaybookTxnId(null);
+						result.setDifferenceAmount(0.0);
+						result.setDescription("Transaction Not Found");
+						result.setStatus(ReconciliationStatus.MISSING_IN_BOOK);
+						result.setCreatedAt(new Date());
+						result.setUpdatedAt(new Date());
+						result.setIsActive(Boolean.TRUE);
+						reconciliationResultList.add(result);
+					} else {
+						ReconciliationResult result = new ReconciliationResult();
+						result.setBankTxnId(bankStatement.getId().toString());
+						result.setDaybookTxnId(daybookTransaction.get().getTxnId().toString());
+						result.setDifferenceAmount(0.0);
+						result.setDescription("Transaction Found");
+						result.setStatus(ReconciliationStatus.MATCHED);
+						result.setCreatedAt(new Date());
+						result.setUpdatedAt(new Date());
+						result.setIsActive(Boolean.TRUE);
+						reconciliationResultList.add(result);
+					}
+				}
+			}
+
+			reconciliationResultRepository.saveAll(reconciliationResultList);
+
+			return new CustomResponse(HttpStatus.OK.value(), notFoundTxn, "Success");
+		} catch (Exception e) {
+			e.printStackTrace();
+			return new CustomResponse(HttpStatus.BAD_REQUEST.value(), null, "Something went wrong");
 		}
 	}
 }
